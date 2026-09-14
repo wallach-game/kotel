@@ -121,7 +121,8 @@ static void boiler_tick(void *ud)
      * from 12V, but the pin itself is a real analog input capped at 5V —
      * anything the divider puts out past that is clipped before we see it,
      * so 5V (not 12V) is the actual ceiling of this input. */
-    double temp_voltage = vx_pin_read_analog(s->temp_in);
+    double temp_voltage_raw = vx_pin_read_analog(s->temp_in);
+    double temp_voltage = temp_voltage_raw;
     if (temp_voltage < 0.0) temp_voltage = 0.0;
     if (temp_voltage > 5.0) temp_voltage = 5.0;
     s->target_temp = 35.0 + temp_voltage * (45.0 / 5.0);
@@ -137,8 +138,9 @@ static void boiler_tick(void *ud)
     }
 
     printf(
-        "Kotel: enabled=%d target=%.1fC water=%.1fC heating=%d\n",
+        "Kotel: enabled=%d temp_pin_raw=%.3fV target=%.1fC water=%.1fC heating=%d\n",
         enabled,
+        temp_voltage_raw,
         s->target_temp,
         s->water_temp,
         s->heating
