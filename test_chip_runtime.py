@@ -233,9 +233,9 @@ def main() -> None:
         if not cond:
             failures.append(name)
 
-    # 12V fed in simulates an unclipped pot reading past the pin's real 5V
-    # ceiling -> must clamp to 5V -> target = 35 + 5*9 = 80.0C (not higher).
-    chip = ChipHarness(wasm, temp_voltage=12.0)
+    # 15V fed in simulates a reading past the pot's real 12V ceiling ->
+    # must clamp to 12V -> target = 35 + 12*3.75 = 80.0C (not higher).
+    chip = ChipHarness(wasm, temp_voltage=15.0)
     chip.run_setup()
 
     check("registers exactly 3 pins", len(chip.pins) == 3, f"got {len(chip.pins)}")
@@ -254,18 +254,18 @@ def main() -> None:
           f"got {len(chip.stdout_lines)} lines — stdio buffering regression")
     if chip.stdout_lines:
         last = chip.stdout_lines[-1]
-        check("target clamps to 80.0C at/above the 5V ceiling", "target=80.0C" in last, last)
+        check("target clamps to 80.0C at/above the 12V ceiling", "target=80.0C" in last, last)
         check("water_temp climbs toward target", "water=20.5C" in last, last)
         check("heating=1 while below target", "heating=1" in last, last)
 
-    # 2V, well inside the 0-5V range -> target = 35 + 2*9 = 53.0C, confirming
-    # the response is actually proportional to voltage, not just clamped.
-    chip2 = ChipHarness(wasm, temp_voltage=2.0)
+    # 6V, well inside the 0-12V range -> target = 35 + 6*3.75 = 57.5C,
+    # confirming the response is actually proportional to voltage, not just clamped.
+    chip2 = ChipHarness(wasm, temp_voltage=6.0)
     chip2.run_setup()
     chip2.tick()
     if chip2.stdout_lines:
-        check("target=53.0C from 2V input (proportional, not clamped)",
-              "target=53.0C" in chip2.stdout_lines[-1], chip2.stdout_lines[-1])
+        check("target=57.5C from 6V input (proportional, not clamped)",
+              "target=57.5C" in chip2.stdout_lines[-1], chip2.stdout_lines[-1])
 
     check("display buffer is non-blank after ticking", any(chip.fb_pixels), "framebuffer never written")
 

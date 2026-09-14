@@ -117,15 +117,12 @@ static void boiler_tick(void *ud)
 
     int enabled = 1;
 
-    /* TEMP pin sets the target: 0V -> 35C, 5V -> 80C. The pot divides down
-     * from 12V, but the pin itself is a real analog input capped at 5V —
-     * anything the divider puts out past that is clipped before we see it,
-     * so 5V (not 12V) is the actual ceiling of this input. */
+    /* TEMP pin sets the target: 0V -> 35C, 12V -> 80C. */
     double temp_voltage_raw = vx_pin_read_analog(s->temp_in);
     double temp_voltage = temp_voltage_raw;
     if (temp_voltage < 0.0) temp_voltage = 0.0;
-    if (temp_voltage > 5.0) temp_voltage = 5.0;
-    s->target_temp = 35.0 + temp_voltage * (45.0 / 5.0);
+    if (temp_voltage > 12.0) temp_voltage = 12.0;
+    s->target_temp = 35.0 + temp_voltage * (45.0 / 12.0);
 
     if (enabled && s->water_temp < s->target_temp) {
         s->heating = 1;
