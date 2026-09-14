@@ -16,7 +16,7 @@ if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
 fi
 
 echo "=== 1. chip.c / chip.json match the .vlx project ==="
-python3 vlx_sync.py check "velxio-project (9).vlx"
+python3 vlx_sync.py check "velxio-project (1).vlx"
 
 echo ""
 echo "=== 2. velxio-chip.h matches upstream (no local fabrications) ==="

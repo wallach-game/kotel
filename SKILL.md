@@ -8,17 +8,17 @@
   the real API, nothing invented locally.
 - `chip.c` / `chip.json` — the "kotel" (boiler) chip source. This is the
   canonical dev copy; it must stay in sync with the same source embedded
-  in `velxio-project (9).vlx` (`components[0].properties.sourceC` /
+  in `velxio-project (1).vlx` (`components[0].properties.sourceC` /
   `chipJson`, plus the `fileGroups` archive copy).
 - `vlx_sync.py` — keeps `chip.c`/`chip.json` and the `.vlx` in sync so you
   never hand-edit the JSON blob:
-  - `python3 vlx_sync.py unpack "velxio-project (9).vlx"` — pull the
+  - `python3 vlx_sync.py unpack "velxio-project (1).vlx"` — pull the
     `.vlx`'s embedded source out into `chip.c`/`chip.json` (e.g. after
     re-exporting from the app).
-  - `python3 vlx_sync.py pack "velxio-project (9).vlx"` — push edited
+  - `python3 vlx_sync.py pack "velxio-project (1).vlx"` — push edited
     `chip.c`/`chip.json` back into the `.vlx` (both the live component
     and the `fileGroups` archive copy), ready to re-import into the app.
-  - `python3 vlx_sync.py check "velxio-project (9).vlx"` — verify they
+  - `python3 vlx_sync.py check "velxio-project (1).vlx"` — verify they
     match; exits 1 if not. `test_automation.sh` step 1 runs this.
 - `check_structs.c` — compiles `velxio-chip.h` alone; if it builds, the
   header's own `_Static_assert`s confirm the I2C/UART/SPI config struct
