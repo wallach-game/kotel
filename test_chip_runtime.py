@@ -30,7 +30,7 @@ def main() -> None:
             failures.append(name)
 
     # 15V fed in simulates a reading past the pot's real 12V ceiling ->
-    # must clamp to 12V -> target = 35 + 12*3.75 = 80.0C (not higher).
+    # must clamp to 12V -> target = 45 + 12*(35/12) = 80.0C (not higher).
     chip = ChipHarness(wasm, temp_voltage=15.0)
     chip.digital_in["ON/OFF"] = 1  # demand on from the start, so heating actually runs
     chip.run_setup()
@@ -44,27 +44,27 @@ def main() -> None:
     check('logs "Kotel: initialized"', "Kotel: initialized" in chip.log_lines)
     check("declares a 64x64 display", (chip.fb_w, chip.fb_h) == (64, 64), f"got {chip.fb_w}x{chip.fb_h}")
 
-    # Past ignition_delay_s (default 30) so the burner is actually running
+    # Past ignition_delay_s (default 42) so the burner is actually running
     # by the time we check target/water/heating below.
-    for _ in range(35):
+    for _ in range(45):
         chip.tick()
 
-    check("printf output survives past tick 1 (fflush)", len(chip.stdout_lines) == 35,
+    check("printf output survives past tick 1 (fflush)", len(chip.stdout_lines) == 45,
           f"got {len(chip.stdout_lines)} lines — stdio buffering regression")
     if chip.stdout_lines:
         last = chip.stdout_lines[-1]
         check("target clamps to 80.0C at/above the 12V ceiling", "target=80.0C" in last, last)
         check("burner_on=1 once past ignition delay", "burner_on=1" in last, last)
 
-    # 6V, well inside the 0-12V range -> target = 35 + 6*3.75 = 57.5C,
+    # 6V, well inside the 0-12V range -> target = 45 + 6*(35/12) = 62.5C,
     # confirming the response is actually proportional to voltage, not just clamped.
     chip2 = ChipHarness(wasm, temp_voltage=6.0)
     chip2.digital_in["ON/OFF"] = 1
     chip2.run_setup()
     chip2.tick()
     if chip2.stdout_lines:
-        check("target=57.5C from 6V input (proportional, not clamped)",
-              "target=57.5C" in chip2.stdout_lines[-1], chip2.stdout_lines[-1])
+        check("target=62.5C from 6V input (proportional, not clamped)",
+              "target=62.5C" in chip2.stdout_lines[-1], chip2.stdout_lines[-1])
 
     check("display buffer is non-blank after ticking", any(chip.fb_pixels), "framebuffer never written")
 

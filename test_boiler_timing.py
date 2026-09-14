@@ -15,8 +15,15 @@ import sys
 from boiler_log import measured_cycle_period, measured_startup_delay_s, parse_log
 from chip_harness import ChipHarness, compile_chip
 
-IGNITION_DELAY_S = 30.0
-CYCLE_PERIOD_S = 120.0
+# Real-measured reference values (from the actual app): cold start opens
+# the vent at 36s and starts heating at 42s; a warm mid-cycle restart opens
+# the vent at 22s and resumes heating at 27s; full cycle (heat-start to
+# heat-start) is ~71s.
+IGNITION_DELAY_S = 42.0
+VENT_DELAY_S = 36.0
+REIGNITION_DELAY_S = 27.0
+REIGNITION_VENT_DELAY_S = 22.0
+CYCLE_PERIOD_S = 71.0
 DELAY_TOLERANCE_S = 1.0
 PERIOD_TOLERANCE_FRAC = 0.10  # +-10%
 
@@ -33,6 +40,24 @@ def run_for(chip: ChipHarness, ticks: int) -> None:
         chip.tick()
 
 
+def _rising_edges(rows: list[dict], key: str) -> list[int]:
+    edges, prev = [], 0
+    for r in rows:
+        if r[key] == 1 and prev == 0:
+            edges.append(r["t"])
+        prev = r[key]
+    return edges
+
+
+def _falling_edges(rows: list[dict], key: str) -> list[int]:
+    edges, prev = [], 0
+    for r in rows:
+        if r[key] == 0 and prev == 1:
+            edges.append(r["t"])
+        prev = r[key]
+    return edges
+
+
 def main() -> None:
     wasm = compile_chip()
     print(f"compiled OK ({len(wasm)} bytes)")
@@ -40,7 +65,7 @@ def main() -> None:
 
     # ── Acceptance: startup delay + steady-state cycle period ──────────────
     print("\n=== ignition delay + cycling (demand held high) ===")
-    chip = ChipHarness(wasm, temp_voltage=8.0)  # target = 35 + 8*3.75 = 65C
+    chip = ChipHarness(wasm, temp_voltage=8.0)  # target = 45 + 8*(35/12) = 68.3C
     chip.digital_in["ON/OFF"] = 1
     chip.run_setup()
     run_for(chip, 600)  # 10 simulated minutes — several steady-state cycles
@@ -50,9 +75,38 @@ def main() -> None:
 
     delay = measured_startup_delay_s(rows)
     print(f"measured startup delay: {delay} s")
-    check(failures, f"startup delay = {IGNITION_DELAY_S}s +-{DELAY_TOLERANCE_S}s",
+    check(failures, f"cold ignition delay = {IGNITION_DELAY_S}s +-{DELAY_TOLERANCE_S}s",
           delay is not None and abs(delay - IGNITION_DELAY_S) <= DELAY_TOLERANCE_S,
           f"got {delay}")
+
+    # Cold vent-open: demand rising edge -> first vent_open=1.
+    demand_edges = _rising_edges(rows, "demand")
+    vent_edges = _rising_edges(rows, "vent_open")
+    cold_vent_delay = (vent_edges[0] - demand_edges[0]) if demand_edges and vent_edges else None
+    print(f"measured cold vent-open delay: {cold_vent_delay} s")
+    check(failures, f"cold vent-open delay = {VENT_DELAY_S}s +-{DELAY_TOLERANCE_S}s",
+          cold_vent_delay is not None and abs(cold_vent_delay - VENT_DELAY_S) <= DELAY_TOLERANCE_S,
+          f"got {cold_vent_delay}")
+
+    # Warm restart: a vent_open falling edge marks the moment mid-cycle
+    # reignition begins (vent_open resets to 0 the instant the hysteresis
+    # controller calls for heat again) — measure both delays from there.
+    vent_falls = _falling_edges(rows, "vent_open")
+    if vent_falls:
+        restart_t = vent_falls[0]
+        warm_vent_t = next((r["t"] for r in rows if r["t"] >= restart_t and r["vent_open"] == 1), None)
+        warm_heat_t = next((r["t"] for r in rows if r["t"] >= restart_t and r["burner_on"] == 1), None)
+        warm_vent_delay = (warm_vent_t - restart_t) if warm_vent_t is not None else None
+        warm_heat_delay = (warm_heat_t - restart_t) if warm_heat_t is not None else None
+    else:
+        warm_vent_delay = warm_heat_delay = None
+    print(f"measured warm vent-open delay: {warm_vent_delay} s, warm reignition delay: {warm_heat_delay} s")
+    check(failures, f"warm vent-open delay = {REIGNITION_VENT_DELAY_S}s +-{DELAY_TOLERANCE_S}s",
+          warm_vent_delay is not None and abs(warm_vent_delay - REIGNITION_VENT_DELAY_S) <= DELAY_TOLERANCE_S,
+          f"got {warm_vent_delay}")
+    check(failures, f"warm reignition delay = {REIGNITION_DELAY_S}s +-{DELAY_TOLERANCE_S}s",
+          warm_heat_delay is not None and abs(warm_heat_delay - REIGNITION_DELAY_S) <= DELAY_TOLERANCE_S,
+          f"got {warm_heat_delay}")
 
     period, amplitude = measured_cycle_period(rows)
     print(f"measured cycle period: {period} s, peak-to-peak amplitude: {amplitude:.2f} C")
@@ -68,9 +122,9 @@ def main() -> None:
     chip2 = ChipHarness(wasm, temp_voltage=8.0)
     chip2.digital_in["ON/OFF"] = 1
     chip2.run_setup()
-    run_for(chip2, 10)          # well inside the 30s ignition delay
+    run_for(chip2, 10)          # well inside the 42s cold ignition delay
     chip2.digital_in["ON/OFF"] = 0
-    run_for(chip2, 40)          # past where ignition would have completed
+    run_for(chip2, 50)          # past where ignition would have completed
 
     rows2 = parse_log(chip2.stdout_lines)
     never_heated = all(r["burner_on"] == 0 for r in rows2)

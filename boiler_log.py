@@ -13,18 +13,21 @@ _LOG_RE = re.compile(
     r"sensor_temp=(?P<sensor_temp>[-\d.]+)\s+water_temp=(?P<water_temp>[-\d.]+)\s+"
     r"state=(?P<state>\d)"
 )
+_VENT_RE = re.compile(r"vent_open=(?P<vent_open>\d)")
 
 
 def parse_log(lines: list[str]) -> list[dict]:
     """Turns raw printf log lines into a time-ordered list of
-    {t, demand, burner_on, sensor_temp, water_temp, state} rows.
+    {t, demand, burner_on, sensor_temp, water_temp, state, vent_open} rows.
     Lines that don't match (e.g. the one-shot "Kotel: initialized") are skipped.
+    vent_open defaults to 0 if the line predates that field.
     """
     rows = []
     for line in lines:
         m = _LOG_RE.search(line)
         if not m:
             continue
+        vm = _VENT_RE.search(line)
         rows.append({
             "t": int(m["t"]),
             "demand": int(m["demand"]),
@@ -32,6 +35,7 @@ def parse_log(lines: list[str]) -> list[dict]:
             "sensor_temp": float(m["sensor_temp"]),
             "water_temp": float(m["water_temp"]),
             "state": int(m["state"]),
+            "vent_open": int(vm["vent_open"]) if vm else 0,
         })
     return rows
 

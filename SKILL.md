@@ -33,13 +33,14 @@
   registered, timer armed, `target_temp` computed correctly, display buffer
   written). Not printf theater.
 - `boiler_log.py` — parses the chip's per-tick log line into rows, and the
-  two measurement helpers the timing acceptance test uses:
-  `measured_startup_delay_s()` and `measured_cycle_period()`.
+  two required measurement helpers: `measured_startup_delay_s()` and
+  `measured_cycle_period()`.
 - `test_boiler_timing.py` — acceptance test for the ignition-delay and
   cycling behaviours (see below): runs the chip for 10 simulated minutes,
-  measures the real startup delay and steady-state cycle period from the
-  log, and checks both against tolerance. Also checks the mid-delay abort
-  path.
+  measures cold and warm vent-open/heat-start delays and the steady-state
+  cycle period from the log, and checks all of them against tolerance
+  (real-measured targets: 36s/42s cold, 22s/27s warm, 71s period). Also
+  checks the mid-delay abort path.
 - `test_automation.sh` — runs all of the above inside the `velxio`
   container (`docker compose up -d` first), since that's where the
   wasi-sdk toolchain and the `wasmtime` Python package live.
@@ -51,44 +52,61 @@ Pins: `ON/OFF` (digital in — the demand/call-for-heat signal), `12V REF`
 `GND`.
 
 Attributes (live-tunable via the diagram editor's part inspector, no
-recompile): `ignition_delay_s` (default 30), `cycle_period_s` (default
-120, reference/documentation only — see below), `sensor_tau_s` (default
-30), `hysteresis_k` (default 3).
+recompile) — cold-start and warm-restart timings are real measurements
+off the actual app, not made up:
+- `ignition_delay_s` (42), `vent_delay_s` (36) — cold start: demand rises
+  → vent opens at 36s → heat starts at 42s.
+- `reignition_delay_s` (27), `reignition_vent_delay_s` (22) — warm
+  restart mid-cycling: hysteresis calls for heat again → vent opens at
+  22s → heat resumes at 27s. Shorter than cold start — the vent
+  mechanism hasn't fully reset.
+- `cycle_period_s` (71) — reference/documentation only, see point 3 below.
+- `sensor_tau_s` (20), `hysteresis_k` (2) — drive the emergent cycling.
+- `min_temp` (45), `max_temp` (80), `max_voltage` (12) — the `TEMP 0-12V`
+  → setpoint mapping.
 
 Every simulated second, `boiler_tick()`:
 
 1. Reads `TEMP 0-12V`'s voltage and maps it to the setpoint (`target_temp`):
-   0V → 35°C, 12V → 80°C (linear, clamped).
+   `min_temp` at 0V to `max_temp` at `max_voltage` (linear, clamped).
 2. Reads `ON/OFF` as the demand signal and runs a 3-state state machine —
    `OFF` → `STARTING` → `HEATING`:
-   - `OFF`→`STARTING` on demand's rising edge.
-   - `STARTING`: produces no heat for `ignition_delay_s`. If demand drops
-     during this window, aborts straight back to `OFF` with no heat ever
-     produced. Otherwise, after the delay, moves to `HEATING` and starts
-     the burner.
-   - `HEATING`: stays here until demand drops (→ `OFF`, burner stops).
-     While here, the burner cycles on/off around the setpoint (below) —
-     it does **not** hold steady once at temperature.
+   - `OFF`→`STARTING` on demand's rising edge (a **cold** start).
+   - `STARTING`: no heat is produced. `vent_open` flips true at
+     `vent_delay_s`/`reignition_vent_delay_s` (cold vs. warm — see
+     below); the burner actually lights at `ignition_delay_s`/
+     `reignition_delay_s`, moving to `HEATING`. If demand drops during
+     this window, aborts straight back to `OFF` with no heat produced.
+   - `HEATING`: stays here until demand drops (→ `OFF`, burner + vent
+     off). While here the burner cycles on/off around the setpoint
+     (point 3) — it does **not** hold steady once at temperature. Each
+     time the hysteresis controller calls for heat again mid-session,
+     state drops back to `STARTING` for a **warm** restart (shorter
+     timing than the initial cold one) before actually relighting.
 3. Cycling is emergent, not a scheduled timer: an internal `sensor_temp`
    chases a burner-driven reference (`target_temp ± 2°C`, fixed swing —
    see `SENSOR_SWING_C`) with time constant `sensor_tau_s`, and a
-   hysteresis band of width `hysteresis_k` around `target_temp` toggles
-   the burner off/on as `sensor_temp` crosses it. This is the same
-   topology as an RC-relaxation oscillator (a 555 astable): a fast
+   hysteresis band of width `hysteresis_k` around `target_temp` decides
+   when the burner should turn off / call for reignition. This is the
+   same topology as an RC-relaxation oscillator (a 555 astable): a fast
    internal sensor lagging behind a slow bulk `water_temp` is exactly
-   what makes a real boiler short-cycle. At the defaults this settles to
-   a ~116s steady-state period (target 120s ±10%) — tune `sensor_tau_s`/
+   what makes a real boiler short-cycle. At the defaults (plus the fixed
+   27s warm reignition delay baked into every cycle) this settles to a
+   ~70s steady-state period (target 71s ±10%) — tune `sensor_tau_s`/
    `hysteresis_k` to shift it; `cycle_period_s` itself is not wired into
    the math, it's just the documented target those two are tuned against.
 4. Heats `water_temp` toward the setpoint at +0.1°C/tick while the burner
-   is on, or lets it drift down -0.02°C/tick toward 20°C floor otherwise.
+   is on, or lets it drift down -0.02°C/tick toward a 20°C floor otherwise.
+   Starts at 40°C (not a cold 20°C) so manual testing in the real app —
+   which runs in wall-clock time — doesn't take forever to get anywhere
+   near the 45-80°C setpoint range.
 5. Logs one line per tick — `t, demand, burner_on, sensor_temp,
-   water_temp, state` (plus `target`) — flushed explicitly (see gotcha
-   below), and draws a 64×64 display: a bar showing current water temp
-   (red while the burner's on, blue when idle), a white line marking the
-   target, and an `M:<state 0/1/2> S:<target> T:<water>` stats line
-   rendered with a hand-rolled 3x5 bitmap font (the real API only gives
-   raw RGBA pixel writes — no text primitive).
+   water_temp, state, vent_open` (plus `target`) — flushed explicitly
+   (see gotcha below), and draws a 64×64 display: a bar showing current
+   water temp (red while the burner's on, blue when idle), a white line
+   marking the target, and an `M:<state 0/1/2> S:<target> T:<water>`
+   stats line rendered with a hand-rolled 3x5 bitmap font (the real API
+   only gives raw RGBA pixel writes — no text primitive).
 
 ## Gotchas hit while building this (now covered by tests)
 

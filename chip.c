@@ -6,7 +6,8 @@
  * setpoint, in C. Not user-tunable (the spec names only sensor_tau_s and
  * hysteresis_k) — it's the internal amplitude the RC-relaxation math below
  * is derived against so the DEFAULT sensor_tau_s/hysteresis_k land the
- * emergent cycle period near cycle_period_s. See docs/boiler-timing.md. */
+ * emergent cycle period near cycle_period_s. See SKILL.md's "What the
+ * boiler chip does" section for the derivation. */
 #define SENSOR_SWING_C 2.0
 
 typedef enum {
@@ -23,10 +24,16 @@ typedef struct {
     vx_timer timer;
 
     /* Configurable parameters (vx_attr_register — live-tunable, no recompile). */
-    vx_attr ignition_delay_s;
+    vx_attr ignition_delay_s;        /* cold start: demand-rise -> first heat */
+    vx_attr vent_delay_s;            /* cold start: demand-rise -> vent open */
+    vx_attr reignition_delay_s;      /* warm restart mid-cycling: burner-off -> heat resumes */
+    vx_attr reignition_vent_delay_s; /* warm restart mid-cycling: burner-off -> vent open */
     vx_attr cycle_period_s;   /* documentation/reference only — see SENSOR_SWING_C comment */
     vx_attr sensor_tau_s;
     vx_attr hysteresis_k;
+    vx_attr min_temp;         /* setpoint at TEMP_IN = 0V */
+    vx_attr max_temp;         /* setpoint at TEMP_IN = max_voltage */
+    vx_attr max_voltage;      /* TEMP_IN full-scale, matches the pin's real wiring */
 
     double water_temp;
     double target_temp;      /* setpoint, from TEMP_IN */
@@ -35,6 +42,8 @@ typedef struct {
     boiler_state_t state;
     int prev_demand;
     int starting_elapsed_s;
+    int is_cold;              /* this STARTING pass: cold (first fire) vs warm (mid-cycle restart) */
+    int vent_open;
     int burner_on;
     int heating;              /* legacy alias of burner_on, kept for the display bar color */
     int tick_count;
@@ -144,41 +153,58 @@ static void boiler_tick(void *ud)
     chip_state_t *s = (chip_state_t *)ud;
     s->tick_count++;
 
-    /* TEMP pin sets the setpoint: 0V -> 35C, 12V -> 80C. */
+    /* TEMP pin sets the setpoint: min_temp .. max_temp over 0 .. max_voltage. */
+    double vmax = vx_attr_read(s->max_voltage);
+    if (vmax < 0.1) vmax = 0.1;
     double temp_voltage_raw = vx_pin_read_analog(s->temp_in);
     double temp_voltage = temp_voltage_raw;
     if (temp_voltage < 0.0) temp_voltage = 0.0;
-    if (temp_voltage > 12.0) temp_voltage = 12.0;
-    s->target_temp = 35.0 + temp_voltage * (45.0 / 12.0);
+    if (temp_voltage > vmax) temp_voltage = vmax;
+    double min_t = vx_attr_read(s->min_temp);
+    double max_t = vx_attr_read(s->max_temp);
+    s->target_temp = min_t + temp_voltage * ((max_t - min_t) / vmax);
 
     int demand = vx_pin_read(s->on_off) != 0;
 
-    /* ── 1. Ignition-delay state machine ─────────────────────────────── */
+    /* ── 1. Ignition-delay state machine ──────────────────────────────────
+     * A real boiler purges/opens its vent before it can fire, and that
+     * same two-stage sequence (vent open, then heat) happens every time
+     * the burner needs to (re)light — not just on the very first call for
+     * heat. A COLD start (from fully OFF) takes longer than a WARM
+     * restart mid-cycling, where the vent mechanism hasn't reset. */
     switch (s->state) {
         case STATE_OFF:
             if (demand && !s->prev_demand) {
                 s->state = STATE_STARTING;
                 s->starting_elapsed_s = 0;
+                s->is_cold = 1;
+                s->vent_open = 0;
             }
             break;
 
-        case STATE_STARTING:
+        case STATE_STARTING: {
             if (!demand) {
                 s->state = STATE_OFF;   /* demand dropped mid-delay: abort, no heat produced */
+                s->vent_open = 0;
             } else {
                 s->starting_elapsed_s++;
-                if (s->starting_elapsed_s >= (int)vx_attr_read(s->ignition_delay_s)) {
+                double vent_delay = vx_attr_read(s->is_cold ? s->vent_delay_s : s->reignition_vent_delay_s);
+                double heat_delay = vx_attr_read(s->is_cold ? s->ignition_delay_s : s->reignition_delay_s);
+                if (s->starting_elapsed_s >= (int)vent_delay) s->vent_open = 1;
+                if (s->starting_elapsed_s >= (int)heat_delay) {
                     s->state = STATE_HEATING;
                     s->burner_on = 1;
-                    s->sensor_temp = s->water_temp;   /* sensor picks up from whatever the water is now */
+                    if (s->is_cold) s->sensor_temp = s->water_temp;  /* fresh session: pick up from the water */
                 }
             }
             break;
+        }
 
         case STATE_HEATING:
             if (!demand) {
                 s->state = STATE_OFF;
                 s->burner_on = 0;
+                s->vent_open = 0;
             }
             break;
     }
@@ -190,9 +216,12 @@ static void boiler_tick(void *ud)
      * burner-driven local reference (+-SENSOR_SWING_C around setpoint)
      * much faster than the bulk water does. That lag is what drives the
      * hysteresis controller into a limit cycle — an RC-relaxation
-     * oscillator, same topology as a 555 astable. Only runs while
-     * actually heating; off/starting produce no heat, so there's nothing
-     * to cycle yet. */
+     * oscillator, same topology as a 555 astable. Once the sensor calls
+     * for reignition (crosses back below setpoint - hysteresis/2), the
+     * burner doesn't relight instantly — it goes through the same
+     * two-stage ignition sequence as above (warm timing this time). Only
+     * runs while actually in HEATING; sensor_temp is frozen during
+     * STARTING (nothing productive is happening yet). */
     if (s->state == STATE_HEATING) {
         double tau = vx_attr_read(s->sensor_tau_s);
         if (tau < 0.1) tau = 0.1;
@@ -201,8 +230,15 @@ static void boiler_tick(void *ud)
         s->sensor_temp += (ref - s->sensor_temp) * (1.0 / tau);
 
         double half = vx_attr_read(s->hysteresis_k) / 2.0;
-        if (s->sensor_temp <= s->target_temp - half) s->burner_on = 1;
-        else if (s->sensor_temp >= s->target_temp + half) s->burner_on = 0;
+        if (s->burner_on && s->sensor_temp >= s->target_temp + half) {
+            s->burner_on = 0;   /* reached upper threshold: coast */
+        } else if (!s->burner_on && s->sensor_temp <= s->target_temp - half) {
+            /* time to relight: warm restart, same as cold ignition but faster */
+            s->state = STATE_STARTING;
+            s->is_cold = 0;
+            s->starting_elapsed_s = 0;
+            s->vent_open = 0;
+        }
     }
 
     /* ── 3. Water thermal model (slow bulk mass) ─────────────────────── */
@@ -214,8 +250,8 @@ static void boiler_tick(void *ud)
     s->heating = s->burner_on;
 
     printf(
-        "Kotel: t=%d demand=%d burner_on=%d sensor_temp=%.2f water_temp=%.2f state=%d target=%.1fC\n",
-        s->tick_count, demand, s->burner_on, s->sensor_temp, s->water_temp, (int)s->state, s->target_temp
+        "Kotel: t=%d demand=%d burner_on=%d sensor_temp=%.2f water_temp=%.2f state=%d vent_open=%d target=%.1fC\n",
+        s->tick_count, demand, s->burner_on, s->sensor_temp, s->water_temp, (int)s->state, s->vent_open, s->target_temp
     );
     fflush(stdout);
 
@@ -234,13 +270,22 @@ void chip_setup(void)
     vx_pin_dac_write(s->ref_12v, 5.0);
     s->temp_in = vx_pin_register("TEMP 0-12V", VX_ANALOG);
 
-    s->ignition_delay_s = vx_attr_register("ignition_delay_s", 30.0);
-    s->cycle_period_s   = vx_attr_register("cycle_period_s", 120.0);
-    s->sensor_tau_s      = vx_attr_register("sensor_tau_s", 30.0);
-    s->hysteresis_k      = vx_attr_register("hysteresis_k", 3.0);
+    s->ignition_delay_s        = vx_attr_register("ignition_delay_s", 42.0);
+    s->vent_delay_s            = vx_attr_register("vent_delay_s", 36.0);
+    s->reignition_delay_s      = vx_attr_register("reignition_delay_s", 27.0);
+    s->reignition_vent_delay_s = vx_attr_register("reignition_vent_delay_s", 22.0);
+    s->cycle_period_s          = vx_attr_register("cycle_period_s", 71.0);
+    s->sensor_tau_s            = vx_attr_register("sensor_tau_s", 20.0);
+    s->hysteresis_k            = vx_attr_register("hysteresis_k", 2.0);
+    s->min_temp                = vx_attr_register("min_temp", 45.0);
+    s->max_temp                = vx_attr_register("max_temp", 80.0);
+    s->max_voltage             = vx_attr_register("max_voltage", 12.0);
 
-    s->water_temp = 20.0;
-    s->sensor_temp = 20.0;
+    /* Starts close to a realistic operating temperature — manual testing
+     * in the real app runs in wall-clock time, and 20C -> ~45-80C at
+     * +0.1C/tick would take real minutes to get anywhere interesting. */
+    s->water_temp = 40.0;
+    s->sensor_temp = 40.0;
     s->state = STATE_OFF;
 
     s->fb = vx_framebuffer_init(&s->fb_w, &s->fb_h);
