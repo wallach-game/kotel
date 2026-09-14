@@ -1,0 +1,18 @@
+{
+  "schema": "velxio-chip/v1",
+  "name": "Boiler Interface",
+  "author": "Jirka",
+  "license": "MIT",
+  "description": "Boiler controller interface with ON/OFF input, 12V reference and 0-12V temperature input.",
+  "pins": [
+    "ON/OFF",
+    "12V REF",
+    "TEMP 0-12V",
+    "GND"
+  ],
+  "attributes": [],
+  "display": {
+    "width": 64,
+    "height": 64
+  }
+}
