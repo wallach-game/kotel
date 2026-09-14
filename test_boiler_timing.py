@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Acceptance test for the boiler-upgrade timing behaviours:
-  1. Ignition delay — no heat for ignition_delay_s after demand rises;
-     aborts with no heat if demand drops mid-delay.
+  1. Ignition delay — no heat for ignition_delay_s (cold) / reignition_delay_s
+     (warm restart mid-cycling) after demand/reignition triggers; aborts with
+     no heat if demand drops mid-delay. vent_open leads heat by the matching
+     vent_delay_s / reignition_vent_delay_s.
   2. Cycling around setpoint — emergent on/off oscillation near cycle_period_s,
      from sensor_tau_s + hysteresis_k, not a hardcoded timer.
+  3. Regression: a live setpoint change while sensor_temp is frozen mid-cycle
+     must not cause the burner to instantly flicker back off the same tick
+     it ignites (see the test below for how this was actually found).
 
 Requires: wasi-sdk + wasmtime, same as test_chip_runtime.py — run via
 test_automation.sh inside the velxio container.
@@ -132,6 +137,40 @@ def main() -> None:
           f"burner_on went high at t={next((r['t'] for r in rows2 if r['burner_on']==1), None)}")
     check(failures, "state returns to OFF (0) after abort", rows2[-1]["state"] == 0 if rows2 else False,
           f"final state: {rows2[-1]['state'] if rows2 else 'n/a'}")
+
+    # ── Regression: setpoint dropped while sensor_temp was frozen mid-cycle ─
+    # sensor_temp is frozen for the whole STARTING window. If the user turns
+    # the TEMP dial down during that freeze, the setpoint the chip computes
+    # every tick (independent of state) drops immediately, but sensor_temp
+    # doesn't catch up until HEATING resumes. Found via a real app log: the
+    # burner "ignited" (burner_on set to 1) and the SAME-TICK hysteresis
+    # check immediately shut it back off, because the stale high sensor_temp
+    # was already past the new (lower) upper threshold — from the outside,
+    # burner_on just stayed 0 for tens of ticks, looking like heat was never
+    # produced at all.
+    print("\n=== setpoint dropped mid-cycle (regression) ===")
+    chip3 = ChipHarness(wasm, temp_voltage=8.0)  # high target, builds up a high sensor_temp
+    chip3.digital_in["ON/OFF"] = 1
+    chip3.run_setup()
+    run_for(chip3, 200)  # cold ignition + a couple of cycles
+    drop_line = len(chip3.stdout_lines)
+    chip3.temp_voltage = 0.0  # dial turned down to minimum -> target drops to 45C
+    run_for(chip3, 150)
+
+    rows3 = parse_log(chip3.stdout_lines)
+    drop_t = rows3[drop_line - 1]["t"]
+    after_drop = [r for r in rows3 if r["t"] >= drop_t]
+    reignitions = []
+    prev_state = 0
+    for r in after_drop:
+        if r["state"] == 2 and prev_state == 1:
+            reignitions.append(r)
+        prev_state = r["state"]
+    check(failures, "a HEATING transition happens after the setpoint drop", len(reignitions) >= 1,
+          f"got {len(reignitions)}")
+    check(failures, "burner_on=1 at every post-drop HEATING transition (no instant flicker)",
+          all(r["burner_on"] == 1 for r in reignitions),
+          f"transitions: {[(r['t'], r['burner_on']) for r in reignitions]}")
 
     print(f"\n{len(failures)} failing" if failures else "\nall checks passed")
     sys.exit(1 if failures else 0)

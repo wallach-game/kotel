@@ -194,7 +194,18 @@ static void boiler_tick(void *ud)
                 if (s->starting_elapsed_s >= (int)heat_delay) {
                     s->state = STATE_HEATING;
                     s->burner_on = 1;
-                    if (s->is_cold) s->sensor_temp = s->water_temp;  /* fresh session: pick up from the water */
+                    /* sensor_temp is frozen for the whole STARTING window
+                     * (see the cycling block below), so if the setpoint got
+                     * turned down mid-delay it can still be sitting above
+                     * the NEW upper threshold the instant heat resumes —
+                     * the same-tick hysteresis check would then shut the
+                     * burner right back off before it ever visibly ran.
+                     * Clamp down to just under the current lower threshold
+                     * (never up — a genuinely-low reading is left alone). */
+                    double half = vx_attr_read(s->hysteresis_k) / 2.0;
+                    double safe_start = s->target_temp - half - 0.01;
+                    double baseline = s->is_cold ? s->water_temp : s->sensor_temp;
+                    s->sensor_temp = (baseline < safe_start) ? baseline : safe_start;
                 }
             }
             break;
