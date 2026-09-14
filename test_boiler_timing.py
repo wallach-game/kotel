@@ -148,14 +148,26 @@ def main() -> None:
     # was already past the new (lower) upper threshold — from the outside,
     # burner_on just stayed 0 for tens of ticks, looking like heat was never
     # produced at all.
+    #
+    # sensor_temp now tracks water_temp (not target_temp) once HEATING, so a
+    # dropped setpoint alone no longer guarantees a reignition is even due
+    # (real water thermal mass legitimately keeps the burner off until the
+    # water actually cools) — that's the runaway-bug fix working correctly,
+    # not something this regression test should fight. To exercise the
+    # actual flicker bug deterministically, force a fresh STARTING window
+    # via a demand toggle (guaranteeing a HEATING transition follows) while
+    # sensor_temp is still stale-high from the prior high-target cycling.
     print("\n=== setpoint dropped mid-cycle (regression) ===")
     chip3 = ChipHarness(wasm, temp_voltage=8.0)  # high target, builds up a high sensor_temp
     chip3.digital_in["ON/OFF"] = 1
     chip3.run_setup()
     run_for(chip3, 200)  # cold ignition + a couple of cycles
+    chip3.digital_in["ON/OFF"] = 0
+    run_for(chip3, 5)
+    chip3.digital_in["ON/OFF"] = 1
     drop_line = len(chip3.stdout_lines)
     chip3.temp_voltage = 0.0  # dial turned down to minimum -> target drops to 45C
-    run_for(chip3, 150)
+    run_for(chip3, 60)  # past the 42s cold ignition delay
 
     rows3 = parse_log(chip3.stdout_lines)
     drop_t = rows3[drop_line - 1]["t"]

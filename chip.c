@@ -2,11 +2,20 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-/* Fixed "how hot/cold the sensor reads near the burner" swing around
- * setpoint, in C. Not user-tunable (the spec names only sensor_tau_s and
- * hysteresis_k) — it's the internal amplitude the RC-relaxation math below
- * is derived against so the DEFAULT sensor_tau_s/hysteresis_k land the
- * emergent cycle period near cycle_period_s. See SKILL.md's "What the
+/* Fixed "how hot/cold the sensor reads near the burner" swing around the
+ * ACTUAL water temperature, in C — the sensor tracks water_temp +-
+ * SENSOR_SWING_C (fast lag, burner-driven), not a fixed offset from the
+ * setpoint. That's what gives the loop real negative feedback: once
+ * water_temp itself is near the setpoint, the sensor swings past the
+ * thresholds almost immediately and the burner backs off — instead of
+ * being decoupled from water_temp and just cycling at a fixed duty cycle
+ * forever regardless of how hot the water actually gets (a real bug this
+ * model had: net heating rate > cooling rate meant water_temp ran away
+ * unbounded past the setpoint with no ceiling).
+ * Not user-tunable (the spec names only sensor_tau_s and hysteresis_k) —
+ * it's the internal amplitude the RC-relaxation math is derived against
+ * so the DEFAULT sensor_tau_s/hysteresis_k land the emergent cycle period
+ * near cycle_period_s once near equilibrium. See SKILL.md's "What the
  * boiler chip does" section for the derivation. */
 #define SENSOR_SWING_C 2.0
 
@@ -223,9 +232,9 @@ static void boiler_tick(void *ud)
     if (s->state != STATE_HEATING) s->burner_on = 0;
 
     /* ── 2. Cycling around setpoint — emergent, not a scheduled timer ───
-     * The internal sensor has low thermal mass: it swings toward a
-     * burner-driven local reference (+-SENSOR_SWING_C around setpoint)
-     * much faster than the bulk water does. That lag is what drives the
+     * The internal sensor has low thermal mass: it swings toward
+     * water_temp +-SENSOR_SWING_C (burner-driven) much faster than the
+     * bulk water itself moves. That lag is what drives the
      * hysteresis controller into a limit cycle — an RC-relaxation
      * oscillator, same topology as a 555 astable. Once the sensor calls
      * for reignition (crosses back below setpoint - hysteresis/2), the
@@ -236,8 +245,7 @@ static void boiler_tick(void *ud)
     if (s->state == STATE_HEATING) {
         double tau = vx_attr_read(s->sensor_tau_s);
         if (tau < 0.1) tau = 0.1;
-        double ref = s->burner_on ? (s->target_temp + SENSOR_SWING_C)
-                                   : (s->target_temp - SENSOR_SWING_C);
+        double ref = s->water_temp + (s->burner_on ? SENSOR_SWING_C : -SENSOR_SWING_C);
         s->sensor_temp += (ref - s->sensor_temp) * (1.0 / tau);
 
         double half = vx_attr_read(s->hysteresis_k) / 2.0;
@@ -286,7 +294,7 @@ void chip_setup(void)
     s->reignition_delay_s      = vx_attr_register("reignition_delay_s", 27.0);
     s->reignition_vent_delay_s = vx_attr_register("reignition_vent_delay_s", 22.0);
     s->cycle_period_s          = vx_attr_register("cycle_period_s", 71.0);
-    s->sensor_tau_s            = vx_attr_register("sensor_tau_s", 20.0);
+    s->sensor_tau_s            = vx_attr_register("sensor_tau_s", 16.0);
     s->hysteresis_k            = vx_attr_register("hysteresis_k", 2.0);
     s->min_temp                = vx_attr_register("min_temp", 45.0);
     s->max_temp                = vx_attr_register("max_temp", 80.0);

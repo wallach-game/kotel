@@ -61,7 +61,7 @@ off the actual app, not made up:
   22s → heat resumes at 27s. Shorter than cold start — the vent
   mechanism hasn't fully reset.
 - `cycle_period_s` (71) — reference/documentation only, see point 3 below.
-- `sensor_tau_s` (20), `hysteresis_k` (2) — drive the emergent cycling.
+- `sensor_tau_s` (16), `hysteresis_k` (2) — drive the emergent cycling.
 - `min_temp` (45), `max_temp` (80), `max_voltage` (12) — the `TEMP 0-12V`
   → setpoint mapping.
 
@@ -84,17 +84,26 @@ Every simulated second, `boiler_tick()`:
      state drops back to `STARTING` for a **warm** restart (shorter
      timing than the initial cold one) before actually relighting.
 3. Cycling is emergent, not a scheduled timer: an internal `sensor_temp`
-   chases a burner-driven reference (`target_temp ± 2°C`, fixed swing —
-   see `SENSOR_SWING_C`) with time constant `sensor_tau_s`, and a
-   hysteresis band of width `hysteresis_k` around `target_temp` decides
-   when the burner should turn off / call for reignition. This is the
-   same topology as an RC-relaxation oscillator (a 555 astable): a fast
-   internal sensor lagging behind a slow bulk `water_temp` is exactly
-   what makes a real boiler short-cycle. At the defaults (plus the fixed
-   27s warm reignition delay baked into every cycle) this settles to a
-   ~70s steady-state period (target 71s ±10%) — tune `sensor_tau_s`/
-   `hysteresis_k` to shift it; `cycle_period_s` itself is not wired into
-   the math, it's just the documented target those two are tuned against.
+   chases `water_temp ± 2°C` (fixed swing, burner-driven — see
+   `SENSOR_SWING_C`) with time constant `sensor_tau_s`, and a hysteresis
+   band of width `hysteresis_k` around `target_temp` decides when the
+   burner should turn off / call for reignition. Tracking `water_temp`
+   (not `target_temp`) is what gives the loop real negative feedback: once
+   the actual water is near the setpoint the sensor swings past the
+   thresholds and the burner backs off, instead of cycling at a fixed
+   duty cycle regardless of how hot the water has actually gotten (a real
+   bug this model had — heating rate (+0.1°C/tick) exceeds cooling rate
+   (-0.02°C/tick), so a decoupled sensor let `water_temp` run away
+   unbounded past the setpoint with no ceiling). This is the same topology
+   as an RC-relaxation oscillator (a 555 astable): a fast internal sensor
+   lagging behind a slow bulk `water_temp` is exactly what makes a real
+   boiler short-cycle. At the defaults (plus the fixed 27s warm
+   reignition delay baked into every cycle) this settles to a ~71s
+   steady-state period (target 71s ±10%), oscillating in a band a couple
+   degrees above the literal setpoint (the same "differential" a real
+   boiler has) — tune `sensor_tau_s`/`hysteresis_k` to shift it;
+   `cycle_period_s` itself is not wired into the math, it's just the
+   documented target those two are tuned against.
 4. Heats `water_temp` toward the setpoint at +0.1°C/tick while the burner
    is on, or lets it drift down -0.02°C/tick toward a 20°C floor otherwise.
    Starts at 40°C (not a cold 20°C) so manual testing in the real app —
