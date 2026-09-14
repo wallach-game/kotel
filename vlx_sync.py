@@ -56,6 +56,13 @@ def cmd_pack(args: argparse.Namespace) -> None:
 
     comp["properties"]["sourceC"] = new_c
     comp["properties"]["chipJson"] = new_j
+    # Invalidate the app's compile cache — it was built from the old
+    # source; leaving it in place risks the app running stale wasm
+    # instead of recompiling from what we just wrote.
+    if "wasmBase64" in comp["properties"]:
+        comp["properties"]["wasmBase64"] = ""
+    if "sourceHash" in comp["properties"]:
+        comp["properties"]["sourceHash"] = ""
 
     fg = find_filegroup_files(data, comp["id"])
     if fg:
