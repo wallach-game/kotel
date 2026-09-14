@@ -49,8 +49,15 @@ echo "✓ compiles clean"
 
 echo ""
 echo "=== 5. runtime behavior (chip_setup + simulated timer ticks) ==="
+docker cp chip_harness.py "$CONTAINER":/tmp/chip_harness.py
 docker cp test_chip_runtime.py "$CONTAINER":/tmp/test_chip_runtime.py
 docker exec -w /tmp "$CONTAINER" python3 /tmp/test_chip_runtime.py
+
+echo ""
+echo "=== 6. boiler timing acceptance (ignition delay + emergent cycling) ==="
+docker cp boiler_log.py "$CONTAINER":/tmp/boiler_log.py
+docker cp test_boiler_timing.py "$CONTAINER":/tmp/test_boiler_timing.py
+docker exec -w /tmp "$CONTAINER" python3 /tmp/test_boiler_timing.py
 
 echo ""
 echo "=== all checks passed ==="

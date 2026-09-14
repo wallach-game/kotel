@@ -1,11 +1,10 @@
 # TODO
 
-- When the boiler controller becomes its own real program (not just this
-  demo chip), stop hardcoding the voltage->target_temp mapping constants
-  (currently `35.0`, `80.0`, `5.0` in `boiler_tick()`) and expose them as
-  chip attributes instead: `vx_attr_register("min_temp", 35.0)`,
-  `vx_attr_register("max_temp", 80.0)`, `vx_attr_register("max_voltage", 5.0)`,
-  read live each tick via `vx_attr_read()`. `chip.json`'s `"attributes"`
-  array gets matching entries (with `min`/`max`/`step`) so they show up as
-  sliders in the diagram editor's part inspector instead of requiring a
-  source edit + recompile to retune.
+- Still pending: the voltage->target_temp mapping constants (`35.0`, `80.0`,
+  `12.0` in `boiler_tick()`) are still hardcoded, not attributes. The
+  ignition-delay/cycling parameters (`ignition_delay_s`, `cycle_period_s`,
+  `sensor_tau_s`, `hysteresis_k`) already followed this pattern — same
+  move applies here: `vx_attr_register("min_temp", 35.0)`, `"max_temp"`,
+  `"max_voltage"`, read live via `vx_attr_read()`, with matching
+  `chip.json` "attributes" entries so they show up as sliders instead of
+  needing a source edit + recompile to retune.

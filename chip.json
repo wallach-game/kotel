@@ -10,7 +10,12 @@
     "TEMP 0-12V",
     "GND"
   ],
-  "attributes": [],
+  "attributes": [
+    { "name": "ignition_delay_s", "label": "Ignition Delay (s)", "type": "float", "default": 30, "min": 0, "max": 120, "step": 1 },
+    { "name": "cycle_period_s", "label": "Target Cycle Period (s)", "type": "float", "default": 120, "min": 10, "max": 600, "step": 5 },
+    { "name": "sensor_tau_s", "label": "Sensor Time Constant (s)", "type": "float", "default": 30, "min": 1, "max": 300, "step": 1 },
+    { "name": "hysteresis_k", "label": "Hysteresis Band (C)", "type": "float", "default": 3, "min": 0.1, "max": 20, "step": 0.1 }
+  ],
   "display": {
     "width": 64,
     "height": 64
